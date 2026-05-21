@@ -1,11 +1,15 @@
+mod ledger;
+mod parsing;
+
 use chrono::{Local, NaiveDate};
 use clap::Parser;
+use rust_decimal_macros::dec;
 use std::path::PathBuf;
 
 use std::fs;
 
-mod ledger;
-mod parser;
+use crate::ledger::compute_tranche;
+use crate::parsing::{translate_document, trim_document, Entry};
 
 #[derive(Parser)]
 #[command(
@@ -33,49 +37,75 @@ fn main() {
         Some(file) => PathBuf::from(file),
         None => default_ledger_path(),
     };
-    let date = match args.as_of {
+    let as_of_date = match args.as_of {
         Some(ref s) => NaiveDate::parse_from_str(s, "%Y-%m-%d")
             .expect("invalid date format, expected YYYY-MM-DD"),
         None => Local::now().date_naive(),
     };
 
     let document = fs::read_to_string(&file).expect("Could not read ledger file");
-    let translated_document = parser::document_translation(document);
+    let trimmed_document = trim_document(document);
+    let mut ledger = translate_document(trimmed_document);
 
-    //todo: Vector of Draws
-    let mut draw_vec: Vec<parser::Entry> = Vec::new();
-    let mut repayment_full_vec: Vec<parser::Entry> = Vec::new();
-    let mut repayment_vec: Vec<parser::Entry> = Vec::new();
+    // Filters out any date after the "as-of" if it was provided:
+    ledger.retain(|entry| match entry {
+        Entry::Draw(draw) => draw.date < as_of_date,
+        Entry::Repayment(repayment) => repayment.date < as_of_date,
+        Entry::RepaymentFull(repaymentfull) => repaymentfull.date < as_of_date,
+    });
 
-    for entry in translated_document {
-        match entry {
-            parser::Entry::Draw { .. } => draw_vec.push(entry),
-            parser::Entry::RepaymentFull { .. } => repayment_full_vec.push(entry),
-            parser::Entry::Repayment { .. } => repayment_vec.push(entry),
+    // Finds the last full repayment entry and removes every entry before it:
+    if let Some(index) = ledger
+        .iter()
+        .rposition(|entry| matches!(entry, Entry::RepaymentFull(_)))
+    {
+        ledger.drain(..=index);
+    }
+
+    let mut total_interest = dec!(0);
+    let mut total_principal = dec!(0);
+
+    // println!("{:?}", ledger);
+    let mut index = 0;
+
+    loop {
+        if ledger.len() > index {
+            total_interest += compute_tranche(as_of_date, &mut ledger, index);
+        } else {
+            break;
+        }
+        index += 1;
+    }
+
+    for tranche in ledger {
+        if matches!(tranche, Entry::Draw(_)) {
+            total_principal += tranche.amount();
+        } else {
+            eprintln!(
+                "A lingering REPAYMENT has not been accounted for. This is that repayment: {:?}",
+                tranche
+            );
         }
     }
-    //todo: Vector of RepaymentFulls
-    //todo: Vector of Repayments
+
+    println!();
+    println!("Outstanding Principal: ${}", total_principal.round_dp(2));
+    println!("Acquired Interest: ${}", total_interest.round_dp(2));
+    println!("     - As of: {}", as_of_date);
 }
 
 // Setup:
-// done: read CLI options
 // todo: enter one of several program operations
-// done: open the document and make a copy
-// done: translate that document
 
 // Main Operation:
-// todo: parse through translated document from the beginning -- or last "REPAYMENT FULL" date
-// note: if "as-of" date is specified, drop all entries after the "as-of" date for making an inquiry as if it were made that day.
-// todo: for every REPAYMENT, add it to a repayment String array
-// todo: run through every draw; they must be accounted for and against existing repayments, such draws may be broken up several times against a repayment history into figures of various compounding that then need summing into the final variable.
-// todo: for every REPAYMENT that has been accounted for, remove it from the array.
-// todo: return the sums of both interest and principal
+// 1. Program states from a match table as indicated by the user.
 
 // General Notes
-// 1. It would be wise to translate the human-readable format to a format more "machine-aligned" for the simplicity of programming and String parsing.
 
 // Optionality worth considering:
 // 1. A print-out table per-tranche of outstanding and interest.
 // 2. CLI write operations
 // 3. Different compounding frequencies
+
+// Error Handling:
+// 1. Need to make sure the ledger is in order.

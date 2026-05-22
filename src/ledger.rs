@@ -4,25 +4,23 @@ use rust_decimal_macros::dec;
 
 use crate::parsing::Entry;
 
-fn apply_interest(principal: &Decimal, interval_interest_rate: &Decimal) -> Decimal {
-    principal * interval_interest_rate
-}
+fn apply_interest(date: &NaiveDate, interest_rate: &Decimal, principal: &Decimal) -> Decimal {
+    let interval_interest_rate = match date.leap_year() {
+        true => interest_rate / dec!(100) / dec!(366),
+        false => interest_rate / dec!(100) / dec!(365),
+    };
 
-fn determine_interval_interest(date: &NaiveDate, interest_rate: &Decimal) -> Decimal {
-    if date.leap_year() {
-        interest_rate / dec!(100) / dec!(365)
-    } else {
-        interest_rate / dec!(100) / dec!(366)
-    }
+    principal * interval_interest_rate
 }
 
 pub fn compute_tranche(
     as_of_date: NaiveDate,
     ledger: &mut Vec<Entry>,
     tranche_index: usize,
-) -> Decimal {
+) -> (Decimal, Decimal) {
     let mut running_date = ledger[tranche_index].date();
     let mut interest = dec!(0);
+    let mut paid_interest = dec!(0);
 
     while ledger[tranche_index].amount() != dec!(0) && running_date <= as_of_date {
         loop {
@@ -40,9 +38,21 @@ pub fn compute_tranche(
             match repayment_index {
                 None => break,
                 Some(repayment_index) => {
-                    let repayment_amount = ledger[repayment_index].amount();
+                    let mut repayment_amount = ledger[repayment_index].amount();
                     let tranche_amount = ledger[tranche_index].amount();
 
+                    // Interest is paid off first:
+                    if repayment_amount < interest {
+                        paid_interest += repayment_amount;
+                        interest -= repayment_amount;
+                        ledger.remove(repayment_index);
+                        break;
+                    } else {
+                        ledger[repayment_index].set_amount(repayment_amount - interest);
+                        repayment_amount = ledger[repayment_index].amount();
+                        paid_interest += interest;
+                        interest = dec!(0);
+                    }
                     // If the repayment is smaller than the tranche principal, subtract that amount from the tranche and delete the repayment from the table:
                     if repayment_amount < tranche_amount {
                         ledger[tranche_index].set_amount(tranche_amount - repayment_amount);
@@ -62,21 +72,23 @@ pub fn compute_tranche(
             break;
         }
 
-        let daily_rate =
-            determine_interval_interest(&running_date, &ledger[tranche_index].rate().unwrap());
-        interest += apply_interest(&ledger[tranche_index].amount(), &daily_rate);
+        interest += apply_interest(
+            &running_date,
+            &ledger[tranche_index].rate().unwrap(),
+            &(ledger[tranche_index].amount() + interest),
+        );
 
         println!(
             "{:?}, ${}, {}",
             &ledger[tranche_index].amount().round_dp(2),
             interest.round_dp(2),
-            running_date
+            running_date,
         );
 
         running_date += chrono::Duration::days(1);
     }
 
-    interest
+    (interest, paid_interest)
 }
 
 // Bugs:
@@ -84,3 +96,6 @@ pub fn compute_tranche(
 //
 // Error Handling:
 // 1. Should not allow repayments that result in negative principal.
+
+// Todo:
+// 1. Include a running figure for interest that has been paid off.

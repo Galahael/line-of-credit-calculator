@@ -1,20 +1,6 @@
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 
-pub fn trim_document(document: String) -> Vec<Vec<String>> {
-    let mut translated_document = Vec::new();
-
-    for line in document.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let tokens: Vec<String> = line.split_whitespace().map(|t| t.to_string()).collect();
-        translated_document.push(tokens);
-    }
-    translated_document
-}
-
 #[derive(Debug)]
 pub enum Entry {
     Draw(Draw),
@@ -71,38 +57,6 @@ pub struct Repayment {
 pub struct RepaymentFull {
     pub date: NaiveDate,
     pub amount: Decimal,
-}
-
-pub fn translate_document(document: Vec<Vec<String>>) -> Vec<Entry> {
-    let mut tranche_vec: Vec<Entry> = Vec::new();
-
-    for line in document {
-        let tranche = match line.as_slice() {
-            [date, draw, amount, at, rate, ..] if draw == "DRAW" && at == "@" => {
-                Entry::Draw(Draw {
-                    date: date_conversion(date),
-                    amount: dollar_to_decimal_conversion(amount),
-                    rate: rate_to_decimal_conversion(rate),
-                })
-            }
-            [date, repayment, amount, ..] if repayment == "REPAYMENT" && amount != "FULL" => {
-                Entry::Repayment(Repayment {
-                    date: date_conversion(date),
-                    amount: dollar_to_decimal_conversion(amount),
-                })
-            }
-            [date, repayment, full, amount, ..] if repayment == "REPAYMENT" && full == "FULL" => {
-                Entry::RepaymentFull(RepaymentFull {
-                    date: date_conversion(date),
-                    amount: dollar_to_decimal_conversion(amount),
-                })
-            }
-            _ => continue,
-        };
-        tranche_vec.push(tranche)
-    }
-
-    tranche_vec
 }
 
 pub fn dollar_to_decimal_conversion(amount: &str) -> Decimal {
